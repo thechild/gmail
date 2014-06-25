@@ -185,6 +185,45 @@ class Message():
     # returns a list of fetched messages (both sent and received) in chronological order
     def fetch_thread(self):
         self.fetch()
+        print "fetching thread id: %s" % self.thread_id
+
+        original_mailbox = self.mailbox
+
+        #btw, this doesn't search all_mail, just the current mailbox.  I think i'll generally be calling it from all_mail, but need to be careful
+        def fetch_and_cache_messages(gmail, mailbox, thread_id):
+            gmail.use_mailbox(mailbox.name)
+            response, results = gmail.imap.uid('SEARCH', None, '(X-GM-THRID ' + thread_id + ')')
+            messages = {}
+            if response == 'OK':
+                uids = results[0].split(' ')
+                for uid in uids:
+                    messages[uid] = Message(mailbox, uid)
+                if messages:
+                    gmail.fetch_multiple_messages(messages)
+                    mailbox.messages.update(messages)
+
+            return messages
+
+        # should this first line use the all_mail mailbox, or self.mailbox?  Also, if we use all mail do we need sent mail?
+        received_messages = fetch_and_cache_messages(self.gmail, self.gmail.mailboxes['[Gmail]/All Mail'], self.thread_id)
+        print "got %s received messages from %s" % (len(received_messages), self.gmail.current_mailbox)
+        #sent_messages = fetch_and_cache_messages(self.gmail, self.gmail.mailboxes['[Gmail]/Sent Mail'], self.thread_id)
+        #print "and %s sent messages from %s" % (len(sent_messages), self.gmail.current_mailbox)
+        #if set(received_messages).issuperset(sent_messages):
+        #    print "all sent messages were included in all mail pull"
+        #else:
+        #    print "XXX: some sent messages were not included in all mail pull" # should have some debugging output here
+        sent_messages = {}
+
+        self.gmail.use_mailbox(original_mailbox.name)
+
+        self.thread = sorted(dict(received_messages.items() + sent_messages.items()).values(),
+            key=lambda m: m.sent_at)
+        return self.thread
+
+
+    def fetch_thread_old(self):
+        self.fetch()
         original_mailbox = self.mailbox
         self.gmail.use_mailbox(original_mailbox.name)
 
@@ -193,9 +232,11 @@ class Message():
         received_messages = {}
         uids = results[0].split(' ')
         if response == 'OK':
-            for uid in uids: received_messages[uid] = Message(original_mailbox, uid)
-            self.gmail.fetch_multiple_messages(received_messages)
-            self.mailbox.messages.update(received_messages)
+            for uid in uids:
+                received_messages[uid] = Message(original_mailbox, uid)
+            if received_messages:
+                self.gmail.fetch_multiple_messages(received_messages)
+                self.mailbox.messages.update(received_messages)
 
         # fetch and cache messages from 'sent'
         self.gmail.use_mailbox('[Gmail]/Sent Mail')
@@ -203,9 +244,11 @@ class Message():
         sent_messages = {}
         uids = results[0].split(' ')
         if response == 'OK':
-            for uid in uids: sent_messages[uid] = Message(self.gmail.mailboxes['[Gmail]/Sent Mail'], uid)
-            self.gmail.fetch_multiple_messages(sent_messages)
-            self.gmail.mailboxes['[Gmail]/Sent Mail'].messages.update(sent_messages)
+            for uid in uids:
+                sent_messages[uid] = Message(self.gmail.mailboxes['[Gmail]/Sent Mail'], uid)
+            if sent_messages:
+                self.gmail.fetch_multiple_messages(sent_messages)
+                self.gmail.mailboxes['[Gmail]/Sent Mail'].messages.update(sent_messages)
 
         self.gmail.use_mailbox(original_mailbox.name)
 
