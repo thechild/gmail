@@ -4,6 +4,7 @@ import re
 import time
 import os
 from email.header import decode_header, make_header
+from email.utils import getaddresses
 from imaplib import ParseFlags
 
 class Message():
@@ -25,6 +26,7 @@ class Message():
         self.fr = None
         self.cc = None
         self.delivered_to = None
+        self.members = None
 
         self.sent_at = None
 
@@ -34,9 +36,9 @@ class Message():
         self.thread_id = None
         self.thread = []
         self.message_id = None
- 
+
         self.attachments = None
-        
+
 
 
     def is_read(self):
@@ -133,6 +135,16 @@ class Message():
         default_charset = 'ASCII'
         return ''.join([ unicode(t[0], t[1] or default_charset) for t in dh ])
 
+    def parse_recipients(self):
+        self.to = getaddresses(self.message.get_all('to', []))
+        self.cc = getaddresses(self.message.get_all('cc', []))
+        resent_tos = getaddresses(self.message.get_all('resent-to', []))
+        resent_ccs = getaddresses(self.message.get_all('resent-cc', []))
+        self.delivered_to = getaddresses(self.message.get_all('delivered_to', []))
+        self.fr = getaddresses(self.message.get_all('from', []))[0]
+        self.members = set([(self.parse_encoded(n),e) for (n, e) in self.to + self.cc + resent_tos + resent_ccs + [self.fr]])
+        return self.members
+
     def parse(self, raw_message):
         raw_headers = raw_message[0]
         raw_email = raw_message[1]
@@ -140,9 +152,7 @@ class Message():
         self.message = email.message_from_string(raw_email)
         self.headers = self.parse_headers(self.message)
 
-        self.to = self.message['to']
-        self.fr = self.message['from']
-        self.delivered_to = self.message['delivered_to']
+        self.parse_recipients()
 
         self.subject = self.parse_encoded(self.message['subject'])
 
@@ -166,13 +176,13 @@ class Message():
         if re.search(r'X-GM-MSGID (\d+)', raw_headers):
             self.message_id = re.search(r'X-GM-MSGID (\d+)', raw_headers).groups(1)[0]
 
-        
+
         # Parse attachments into attachment objects array for this message
         self.attachments = [
             Attachment(attachment) for attachment in self.message._payload
                 if not isinstance(attachment, basestring) and attachment.get('Content-Disposition') is not None
         ]
-        
+
 
     def fetch(self):
         if not self.message:
