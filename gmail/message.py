@@ -9,6 +9,8 @@ from imaplib import ParseFlags
 
 class Message():
 
+    def __repr__(self):
+        return '<Message: uid: %s date: %s subject %s>' % (self.uid, self.sent_at, self.subject)
 
     def __init__(self, mailbox, uid):
         self.uid = uid
