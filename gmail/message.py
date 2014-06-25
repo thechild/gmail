@@ -128,7 +128,7 @@ class Message():
         else:
             return list()
 
-    def parse_subject(self, encoded_subject):
+    def parse_encoded(self, encoded_subject):
         dh = decode_header(encoded_subject)
         default_charset = 'ASCII'
         return ''.join([ unicode(t[0], t[1] or default_charset) for t in dh ])
@@ -144,7 +144,7 @@ class Message():
         self.fr = self.message['from']
         self.delivered_to = self.message['delivered_to']
 
-        self.subject = self.parse_subject(self.message['subject'])
+        self.subject = self.parse_encoded(self.message['subject'])
 
         if self.message.get_content_maintype() == "multipart":
             for content in self.message.walk():
