@@ -7,6 +7,7 @@ from email.header import decode_header, make_header
 from email.utils import getaddresses
 from imaplib import ParseFlags
 
+
 class Message():
 
     def __repr__(self):
@@ -39,9 +40,7 @@ class Message():
         self.thread = []
         self.message_id = None
 
-        self.attachments = None
-
-
+        self.attachments = []
 
     def is_read(self):
         return ('\\Seen' in self.flags)
@@ -104,13 +103,10 @@ class Message():
     #     self.gmail.imap.uid('STORE', self.uid, '-FLAGS', flag)
     #     if flag in self.flags: self.flags.remove(flag)
 
-
     def move_to(self, name):
         self.gmail.copy(self.uid, name, self.mailbox.name)
         if name not in ['[Gmail]/Bin', '[Gmail]/Trash']:
             self.delete()
-
-
 
     def archive(self):
         self.move_to('[Gmail]/All Mail')
@@ -118,7 +114,7 @@ class Message():
     def parse_headers(self, message):
         hdrs = {}
         for hdr in message.keys():
-            hdrs[hdr] = message[hdr]
+            hdrs[unicode(hdr)] = message[unicode(hdr)]
         return hdrs
 
     def parse_flags(self, headers):
@@ -135,7 +131,7 @@ class Message():
     def parse_encoded(self, encoded_subject):
         dh = decode_header(encoded_subject)
         default_charset = 'ASCII'
-        return ''.join([ unicode(t[0], t[1] or default_charset) for t in dh ])
+        return ''.join([ unicode(t[0], t[1] or default_charset, 'replace') for t in dh ])
 
     def parse_recipients(self):
         self.to = getaddresses(self.message.get_all('to', []))
@@ -145,6 +141,7 @@ class Message():
         self.delivered_to = getaddresses(self.message.get_all('delivered_to', []))
         self.fr = getaddresses(self.message.get_all('from', []))[0]
         self.members = set([(self.parse_encoded(n),e) for (n, e) in self.to + self.cc + resent_tos + resent_ccs + [self.fr]])
+        self.fr = (self.parse_encoded(self.fr[0]), self.fr[1])
         return self.members
 
     def parse(self, raw_message):
@@ -158,16 +155,16 @@ class Message():
 
         self.subject = self.parse_encoded(self.message['subject'])
 
-        if self.message.get_content_maintype() == "multipart":
-            for content in self.message.walk():
-                if content.get_content_type() == "text/plain":
-                    self.body = content.get_payload(decode=True)
-                elif content.get_content_type() == "text/html":
-                    self.html = content.get_payload(decode=True)
-        elif self.message.get_content_maintype() == "text":
-            self.body = self.message.get_payload()
+        #if self.message.get_content_maintype() == "multipart":
+        #    for content in self.message.walk():
+        #        if content.get_content_type() == "text/plain":
+        #            self.body = content.get_payload(decode=True)
+        #        elif content.get_content_type() == "text/html":
+        #            self.html = content.get_payload(decode=True)
+        #elif self.message.get_content_maintype() == "text":
+        #    self.body = self.message.get_payload()
 
-        self.sent_at = datetime.datetime.fromtimestamp(time.mktime(email.utils.parsedate_tz(self.message['date'])[:9]))
+        self.cc_message_parse(self.message)
 
         self.flags = self.parse_flags(raw_headers)
 
@@ -178,13 +175,56 @@ class Message():
         if re.search(r'X-GM-MSGID (\d+)', raw_headers):
             self.message_id = re.search(r'X-GM-MSGID (\d+)', raw_headers).groups(1)[0]
 
+        if self.message['date']:
+            self.sent_at = datetime.datetime.fromtimestamp(time.mktime(email.utils.parsedate_tz(self.message['date'])[:9]))
+        else:
+            self.sent_at = datetime.datetime(year=1980, month=1, day=1)
+            print "Message {} <{}> didn't have a sent date, setting to 1/1/1980".format(self.message_id, self.subject)
 
         # Parse attachments into attachment objects array for this message
-        self.attachments = [
-            Attachment(attachment) for attachment in self.message._payload
-                if not isinstance(attachment, basestring) and attachment.get('Content-Disposition') is not None
-        ]
+        #self.attachments = [
+        #    Attachment(attachment) for attachment in self.message._payload
+        #        if not isinstance(attachment, basestring) and attachment.get('Content-Disposition') is not None
+        #]
 
+    @staticmethod
+    def get_decoded_payload(content):
+
+        if content.get_content_charset():
+            encoding = content.get_content_charset()
+        elif content.get_charset():
+            encoding = content.get_content_charset()
+        else:
+            encoding = 'ascii'
+
+        payload = content.get_payload(decode=True)
+
+        try:
+            decoded = payload.decode(encoding, 'replace')
+        except UnicodeDecodeError:
+            decoded = payload.decode('utf8', errors='replace')
+        except LookupError:
+            decoded = payload.decode('utf8', errors='replace')
+
+        return decoded
+
+    def cc_message_parse(self, content, related=False):
+        if content.get_content_type() == 'multipart/related':
+            for part in content.get_payload():
+                self.cc_message_parse(part, related=True)
+        elif content.get_content_type() in ('multipart/alternative', 'multipart/mixed'):
+            for part in content.get_payload():
+                self.cc_message_parse(part)
+        elif content.get_content_type() == 'text/plain':
+            self.body = self.get_decoded_payload(content)
+        elif content.get_content_type() == 'text/html':
+            self.html = self.get_decoded_payload(content)
+        elif content.get_content_type() == 'text/enriched':
+            pass  # ignore rich text for now...
+        elif 'message/' in content.get_content_type():
+            pass  # ignore this for now, but should probably save as an .eml or something?
+        else:
+            self.attachments.append((content, related))
 
     def fetch(self):
         if not self.message:
@@ -218,7 +258,7 @@ class Message():
 
         # should this first line use the all_mail mailbox, or self.mailbox?  Also, if we use all mail do we need sent mail?
         received_messages = fetch_and_cache_messages(self.gmail, self.gmail.mailboxes['[Gmail]/All Mail'], self.thread_id)
-        print "got %s received messages from %s" % (len(received_messages), self.gmail.current_mailbox)
+        # print "got %s received messages from %s" % (len(received_messages), self.gmail.current_mailbox)
         #sent_messages = fetch_and_cache_messages(self.gmail, self.gmail.mailboxes['[Gmail]/Sent Mail'], self.thread_id)
         #print "and %s sent messages from %s" % (len(sent_messages), self.gmail.current_mailbox)
         #if set(received_messages).issuperset(sent_messages):
@@ -231,6 +271,8 @@ class Message():
 
         self.thread = sorted(dict(received_messages.items() + sent_messages.items()).values(),
             key=lambda m: m.sent_at)
+
+        print "fetched {} messages".format(len(received_messages))
         return self.thread
 
 
@@ -274,6 +316,7 @@ class Attachment:
         self.name = attachment.get_filename()
         # Raw file data
         self.payload = attachment.get_payload(decode=True)
+        self.content_type = attachment.get_content_type()
         # Filesize in kilobytes
         self.size = int(round(len(self.payload)/1000.0))
 
@@ -287,3 +330,15 @@ class Attachment:
 
         with open(path, 'wb') as f:
             f.write(self.payload)
+
+
+def get_charset(message, default='utf8'):
+
+        if message.get_content_charset():
+            default = message.get_content_charset()
+
+        if message.get_charset():
+            default = message.get_charset()
+
+        print "charset: %s" % default
+        return default
